@@ -62,7 +62,8 @@ if __name__ == "__main__":
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
 
-    config.model.load_bf16 = False
+    # Eagle-Block2A-2B-v2 requires bf16 by default (see `EagleBackbone` asserts).
+    config.model.load_bf16 = True
     config.model.reproject_vision = False
     config.model.eagle_collator = True
     config.model.model_name = "nvidia/Eagle-Block2A-2B-v2"

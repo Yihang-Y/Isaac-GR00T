@@ -3,6 +3,7 @@ import torch
 from tqdm import tqdm
 
 from gr00t.configs.base_config import Config
+from gr00t.data.dataset.sharded_chunk_dataset import ShardedChunkDataset
 from gr00t.data.dataset.sharded_mixture_dataset import ShardedMixtureDataset
 from gr00t.data.dataset.sharded_single_step_dataset import ShardedSingleStepDataset
 from gr00t.data.embodiment_tags import EmbodimentTag
@@ -47,16 +48,31 @@ class DatasetFactory:
                     generate_stats(dataset_path)
                     generate_rel_stats(dataset_path, EmbodimentTag(embodiment_tag))
                 barrier()
-                dataset = ShardedSingleStepDataset(
-                    dataset_path=dataset_path,
-                    embodiment_tag=EmbodimentTag(embodiment_tag),
-                    modality_configs=self.config.data.modality_configs[embodiment_tag],
-                    video_backend=self.config.data.video_backend,
-                    shard_size=self.config.data.shard_size,
-                    episode_sampling_rate=self.config.data.episode_sampling_rate,
-                    seed=self.config.data.seed,
-                    allow_padding=self.config.data.allow_padding,
-                )
+                # Choose dataset class based on dataset_mode
+                if self.config.data.dataset_mode == "chunk":
+                    dataset = ShardedChunkDataset(
+                        dataset_path=dataset_path,
+                        embodiment_tag=EmbodimentTag(embodiment_tag),
+                        modality_configs=self.config.data.modality_configs[embodiment_tag],
+                        video_backend=self.config.data.video_backend,
+                        shard_size=self.config.data.shard_size,
+                        episode_sampling_rate=self.config.data.episode_sampling_rate,
+                        chunk_len=self.config.data.chunk_len,
+                        chunk_stride=self.config.data.chunk_stride,
+                        seed=self.config.data.seed,
+                        allow_padding=self.config.data.allow_padding,
+                    )
+                else:  # default: "single_step"
+                    dataset = ShardedSingleStepDataset(
+                        dataset_path=dataset_path,
+                        embodiment_tag=EmbodimentTag(embodiment_tag),
+                        modality_configs=self.config.data.modality_configs[embodiment_tag],
+                        video_backend=self.config.data.video_backend,
+                        shard_size=self.config.data.shard_size,
+                        episode_sampling_rate=self.config.data.episode_sampling_rate,
+                        seed=self.config.data.seed,
+                        allow_padding=self.config.data.allow_padding,
+                    )
                 datasets.append(dataset)
             dataset_lengths = np.array([len(dataset) for dataset in datasets])
             dataset_relative_lengths = dataset_lengths / dataset_lengths.sum()

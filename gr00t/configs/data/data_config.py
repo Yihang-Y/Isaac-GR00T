@@ -57,6 +57,13 @@ class DataConfig:
     episode_sampling_rate: float = 0.1
     num_shards_per_epoch: int = int(1e5)
 
+    # Dataset mode: "single_step" or "chunk"
+    dataset_mode: str = "chunk"
+
+    # Chunk dataset configuration (only used when dataset_mode == "chunk")
+    chunk_len: int = 16  # Total chunk length (burn_in + unroll)
+    chunk_stride: int = 1  # Stride between chunk windows
+
     # Override statistics from the pretrained checkpoint
     override_pretraining_statistics: bool = False
 

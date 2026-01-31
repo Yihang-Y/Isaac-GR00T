@@ -92,7 +92,7 @@ class FinetuneConfig:
     num_gpus: int = 1
     """Number of GPUs available for distributed or single-node training."""
 
-    use_wandb: bool = False
+    use_wandb: bool = True
     """
     If True, log metrics and artifacts to Weights & Biases (wandb).
     The project is `finetune-gr00t-n1d6`.

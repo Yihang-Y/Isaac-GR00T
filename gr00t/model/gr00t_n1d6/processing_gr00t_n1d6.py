@@ -97,7 +97,14 @@ class Gr00tN1d6DataCollator:
                 raise Exception("Not implemented")
             else:
                 # state, state_mask, action and action_mask - stack to form batch dimension
-                batch[key] = torch.from_numpy(np.stack(values))
+                v0 = values[0]
+                if torch.is_tensor(v0):
+                    batch[key] = torch.stack(values, dim=0)
+                elif isinstance(v0, np.ndarray):
+                    batch[key] = torch.from_numpy(np.stack(values))
+                else:
+                    # e.g. embodiment_id (int)
+                    batch[key] = torch.tensor(values)
         return BatchFeature(data={"inputs": batch})
 
     def __str__(self):
@@ -122,8 +129,8 @@ class Gr00tN1d6Processor(BaseProcessor):
         formalize_language: bool = True,
         model_name: str = "nvidia/Eagle-Block2A-2B-v2",
         model_type: Literal["eagle"] = "eagle",
-        max_state_dim: int = 29,
-        max_action_dim: int = 29,
+        max_state_dim: int = 128,
+        max_action_dim: int = 128,
         apply_sincos_state_encoding: bool = False,
         max_action_horizon: int = 40,
         use_albumentations: bool = False,
@@ -271,9 +278,20 @@ class Gr00tN1d6Processor(BaseProcessor):
         ]
 
         # Apply chat template but don't process yet - let collator handle it
-        text = self.processor.apply_chat_template(
-            conversation, tokenize=False, add_generation_prompt=False
-        )
+        # NOTE: Eagle3 processor provides a custom template that inserts <image-1> tokens.
+        if hasattr(self.processor, "py_apply_chat_template"):
+            text = self.processor.py_apply_chat_template(
+                conversation, tokenize=False, add_generation_prompt=False
+            )
+        else:
+            text = self.processor.apply_chat_template(
+                conversation, tokenize=False, add_generation_prompt=False
+            )
+
+        if os.environ.get("GROOT_DEBUG_VLM", "0") == "1":
+            # Basic sanity check: image placeholders should exist when images are present.
+            has_image_tag = "<image-" in text
+            print(f"GROOT_DEBUG_VLM: chat_template has_image_tag={has_image_tag}")
 
         # Return vlm_content format for collation
         return {

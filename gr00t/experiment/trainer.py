@@ -285,6 +285,19 @@ class Gr00tTrainer(Trainer):
         *and* model outputs, we calculate accuracy and push it to the logger.
         """
 
+        # `inputs` can be a `BatchFeature` (Mapping) that may also carry non-model metadata
+        # (e.g. `meta`). Strip it before calling into HF Trainer which forwards kwargs to
+        # `model(**inputs)`.
+        if inputs is not None and isinstance(inputs, dict) and "meta" in inputs:
+            inputs = {k: v for k, v in inputs.items() if k != "meta"}
+        else:
+            # Handle `BatchFeature` / other Mapping types.
+            try:
+                if inputs is not None and "meta" in inputs:
+                    inputs = {k: v for k, v in dict(inputs).items() if k != "meta"}
+            except Exception:
+                pass
+
         # Use parent implementation to preserve built-in functionality.
         loss, outputs = super().compute_loss(
             model,

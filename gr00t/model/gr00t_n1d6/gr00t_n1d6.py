@@ -73,7 +73,9 @@ class Gr00tN1d6ActionHead(nn.Module):
         # State dropout parameters
         self.state_dropout_prob = config.state_dropout_prob
         self.mask_token = (
-            nn.Parameter(0.02 * torch.randn(1, 1, self.input_embedding_dim))
+            # Keep `mask_token` in FP32 for stability (BF16 optimizer/ZeRO can corrupt tiny params).
+            # We'll cast to the runtime dtype in `forward()` when applying it.
+            nn.Parameter(0.02 * torch.randn(1, 1, self.input_embedding_dim, dtype=torch.float32))
             if self.state_dropout_prob > 0
             else None
         )
@@ -185,7 +187,8 @@ class Gr00tN1d6ActionHead(nn.Module):
                 < self.state_dropout_prob
             )
             do_dropout = do_dropout[:, None, None].to(dtype=state_features.dtype)
-            state_features = state_features * (1 - do_dropout) + self.mask_token * do_dropout
+            mask_tok = self.mask_token.to(dtype=state_features.dtype, device=state_features.device)
+            state_features = state_features * (1 - do_dropout) + mask_tok * do_dropout
 
         # Add Gaussian noise to state features.
         if self.training and self.state_additive_noise_scale > 0:

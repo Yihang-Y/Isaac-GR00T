@@ -396,7 +396,7 @@ class ShardedMixtureDataset(IterableDataset):
             self.worker_shard_sampling_schedule = self.filter_shard_sample_schedule()
             self.curr_shard_index = -1
 
-        print(f"Rank {self.rank}, Worker {self.worker_id}: Caching shard...")
+        # print(f"Rank {self.rank}, Worker {self.worker_id}: Caching shard...")
         next_dataset_idx, next_shard_idx = self.worker_shard_sampling_schedule[
             self.curr_shard_index + 1
         ]

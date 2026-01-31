@@ -52,8 +52,8 @@ class Gr00tN1d6Config(PretrainedConfig):
     use_relative_action: bool = False
 
     # Action head configuration parameters
-    max_state_dim: int = 29  # Default from state_shape
-    max_action_dim: int = 29  # Default from action_shape
+    max_state_dim: int = 128  # Default from state_shape
+    max_action_dim: int = 128  # Default from action_shape
     action_horizon: int = 16
     hidden_size: int = 1024
     input_embedding_dim: int = 1536

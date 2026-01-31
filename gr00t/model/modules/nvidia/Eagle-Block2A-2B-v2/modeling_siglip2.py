@@ -1308,22 +1308,31 @@ class Siglip2PreTrainedModel(PreTrainedModel):
             nn.init.xavier_uniform_(module.probe.data)
             nn.init.xavier_uniform_(module.attention.in_proj_weight.data)
             nn.init.zeros_(module.attention.in_proj_bias.data)
-        elif isinstance(module, Siglip2Model):
-            logit_scale_init = torch.log(torch.tensor(1.0))
-            module.logit_scale.data.fill_(logit_scale_init)
-            module.logit_bias.data.zero_()
-        elif isinstance(module, Siglip2ForImageClassification):
-            nn.init.normal_(
-                module.classifier.weight,
-                std=self.config.vision_config.hidden_size**-0.5 * self.config.initializer_factor,
-            )
-        elif isinstance(module, (nn.Linear, nn.Conv2d)):
-            lecun_normal_(module.weight)
-            if module.bias is not None:
-                nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.LayerNorm):
-            module.bias.data.zero_()
-            module.weight.data.fill_(1.0)
+        else:
+            # NOTE:
+            # Some upstream SigLIP2 variants define a top-level `Siglip2Model` (vision+text) with
+            # `logit_scale`/`logit_bias`. This Eagle bundle only defines `Siglip2VisionModel`, so
+            # referencing `Siglip2Model` would raise NameError at import time.
+            siglip2_model_cls = globals().get("Siglip2Model", None)
+            if siglip2_model_cls is not None and isinstance(module, siglip2_model_cls):
+                logit_scale_init = torch.log(torch.tensor(1.0))
+                module.logit_scale.data.fill_(logit_scale_init)
+                module.logit_bias.data.zero_()
+            # Same story as above: some upstream bundles include a classification head class,
+            # but this Eagle bundle may not.
+            siglip2_img_cls = globals().get("Siglip2ForImageClassification", None)
+            if siglip2_img_cls is not None and isinstance(module, siglip2_img_cls):
+                nn.init.normal_(
+                    module.classifier.weight,
+                    std=self.config.vision_config.hidden_size**-0.5 * self.config.initializer_factor,
+                )
+            elif isinstance(module, (nn.Linear, nn.Conv2d)):
+                lecun_normal_(module.weight)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                module.bias.data.zero_()
+                module.weight.data.fill_(1.0)
 
 
 class Siglip2MultiheadAttentionPoolingHead(nn.Module):

@@ -15,6 +15,7 @@ from gr00t.configs.base_config import Config
 
 # Use custom trainer that profiles data loading & forward times
 from gr00t.experiment.trainer import Gr00tTrainer, ProfCallback
+from gr00t.experiment.trainer_chunk import Gr00tChunkTrainer
 from gr00t.experiment.utils import BestMetricCheckpointCallback, CheckpointFormatCallback
 from gr00t.model import MODEL_REGISTRY
 from gr00t.utils.initial_actions import INITIAL_ACTIONS_FILENAME, save_initial_actions
@@ -220,15 +221,36 @@ def run(config: Config):
         ignore_data_skip=True,
     )
 
-    # Create trainer
-    trainer = Gr00tTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        data_collator=data_collator,
-        multiprocessing_context=config.data.multiprocessing_context,
-    )
+    # Create trainer (choose based on config)
+    trainer_type = getattr(config.training, "trainer_type", "default")
+    if trainer_type == "chunk" or config.data.dataset_mode == "chunk":
+        # Use chunk trainer for chunk-based training
+        # Get memory visualization settings from config
+        log_memory_stats_every = getattr(config.training, "log_memory_stats_every_n_steps", 100)
+        log_memory_detail_every = getattr(config.training, "log_memory_detail_every_n_steps", 500)
+        log_attention_every = getattr(config.training, "log_attention_every_n_steps", 500)
+        
+        trainer = Gr00tChunkTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator,
+            multiprocessing_context=config.data.multiprocessing_context,
+            log_memory_stats_every_n_steps=log_memory_stats_every,
+            log_memory_detail_every_n_steps=log_memory_detail_every,
+            log_attention_every_n_steps=log_attention_every,
+        )
+    else:
+        # Use default trainer for single-step training
+        trainer = Gr00tTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            data_collator=data_collator,
+            multiprocessing_context=config.data.multiprocessing_context,
+        )
 
     trainer.add_callback(
         CheckpointFormatCallback(

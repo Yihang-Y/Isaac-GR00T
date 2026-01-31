@@ -61,7 +61,7 @@ class TrainingConfig:
 
     # DeepSpeed (default)
     deepspeed_stage: int = 2  # ZeRO stage (1, 2, or 3)
-    gradient_checkpointing: bool = False
+    gradient_checkpointing: bool = True
 
     # Transformers loading parameters
     transformers_trust_remote_code: bool = True
@@ -80,9 +80,20 @@ class TrainingConfig:
     # Data handling
     remove_unused_columns: bool = False
 
+    # Trainer selection
+    trainer_type: str = "chunk"  # "default" or "chunk" (for chunk-based memory training)
+
     # Experiment tracking
-    use_wandb: bool = False
-    wandb_project: str = "finetune-gr00t-n1d6"
+    use_wandb: bool = True
+    wandb_project: str = "finetune-gr00t-n1d6-mem"
+
+    # Memory training visualization (only used when trainer_type="chunk")
+    log_memory_stats_every_n_steps: int = 100
+    """Log core memory stats (out_norm, loss_trend) every N steps. Set 0 to disable."""
+    log_memory_detail_every_n_steps: int = 500
+    """Log detailed memory diagnostics (cosine_sim, etc.) every N steps. Set 0 to disable."""
+    log_attention_every_n_steps: int = 500
+    """Log attention heatmaps to wandb every N steps. Set 0 to disable (saves compute)."""
 
     # Profiling
     enable_profiling: bool = False
