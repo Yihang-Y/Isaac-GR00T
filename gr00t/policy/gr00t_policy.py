@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 from transformers import AutoModel, AutoProcessor
+from transformers.feature_extraction_utils import BatchFeature
 
 from gr00t.data.embodiment_tags import EmbodimentTag
 from gr00t.data.interfaces import BaseProcessor
@@ -63,6 +64,9 @@ class Gr00tPolicy(BasePolicy):
         *,
         device: int | str,
         strict: bool = True,
+        max_mem_history: int | None = None,
+        use_noise_mem: bool = False,
+        noise_mem_std: float = 0.1,
     ):
         """Initialize the Gr00t Policy.
 
@@ -71,27 +75,231 @@ class Gr00tPolicy(BasePolicy):
             model_path: Path to the pretrained model checkpoint directory
             device: Device to run the model on (e.g., 'cuda:0', 0, 'cpu')
             strict: Whether to enforce strict input validation (default: True)
+            max_mem_history: Maximum number of steps to keep in memory before resetting.
+                If None, uses the model's mem_max_history_steps config value.
+                When exceeded, memory state is reset to None (fresh start).
+            use_noise_mem: If True, replace past memory state with noise during inference.
+                This can be used for ablation studies or testing robustness.
+            noise_mem_std: Standard deviation for noise when use_noise_mem=True.
         """
         # Import this to register all models.
         import gr00t.model  # noqa: F401
 
         super().__init__(strict=strict)
+        
+        # Memory state for mem models (will be initialized after model loading)
+        self._mem_state = None
+        self._is_mem_model = False
+        self._mem_step_count = 0  # Track number of steps with memory
+        self._max_mem_history = max_mem_history  # Will be set after model loading if None
+        self._use_noise_mem = use_noise_mem
+        self._noise_mem_std = noise_mem_std
+        
         model_dir = Path(model_path)
+        original_model_dir = model_dir  # Keep reference to original path
 
-        # Load the pretrained model and move to target device with bfloat16 precision
-        model = AutoModel.from_pretrained(model_dir)
-        model.eval()  # Set model to evaluation mode
-        model.to(device=device, dtype=torch.bfloat16)
-        self.model = model
-
-        # Load the processor for input/output transformation
-        self.processor: BaseProcessor = AutoProcessor.from_pretrained(model_dir)
+        # Check if this is a main output directory (contains checkpoint-* subdirectories)
+        # or a specific checkpoint directory
+        checkpoint_dirs = sorted(model_dir.glob("checkpoint-*"))
+        if checkpoint_dirs:
+            # Main output directory: use the latest checkpoint
+            model_dir = checkpoint_dirs[-1]  # Latest checkpoint (sorted by name)
+        
+        # Load the processor: try checkpoint/processor/ first, then fall back to main output_dir/processor/
+        processor_dir = model_dir / "processor"
+        if not processor_dir.exists():
+            # Try main output directory's processor
+            processor_dir = original_model_dir / "processor"
+            if not processor_dir.exists():
+                raise FileNotFoundError(
+                    f"Processor directory not found in either:\n"
+                    f"  - {model_dir / 'processor'}\n"
+                    f"  - {original_model_dir / 'processor'}\n"
+                    f"Make sure the checkpoint or output directory contains a 'processor' subdirectory."
+                )
+        
+        # Use absolute path as string (os.path.isdir needs string, not Path)
+        processor_dir_str = str(processor_dir.resolve())
+        
+        # Try direct processor class loading first (avoids AutoProcessor's Hub validation)
+        try:
+            # Import processor classes
+            from gr00t.model.gr00t_n1d6_mem.processing_gr00t_n1d6_mem import Gr00tN1d6MemProcessor
+            from gr00t.model.gr00t_n1d6.processing_gr00t_n1d6 import Gr00tN1d6Processor
+            
+            # Try mem processor first, then fall back to regular processor
+            try:
+                self.processor: BaseProcessor = Gr00tN1d6MemProcessor.from_pretrained(
+                    processor_dir_str,
+                    trust_remote_code=True
+                )
+            except (FileNotFoundError, KeyError, OSError):
+                self.processor: BaseProcessor = Gr00tN1d6Processor.from_pretrained(
+                    processor_dir_str,
+                    trust_remote_code=True
+                )
+        except (ImportError, FileNotFoundError, OSError) as e:
+            # Fallback to AutoProcessor if direct loading fails
+            self.processor: BaseProcessor = AutoProcessor.from_pretrained(
+                processor_dir_str, 
+                local_files_only=True,
+                trust_remote_code=True
+            )
         self.processor.eval()
+        
+        # Try to load model using standard HuggingFace from_pretrained first
+        # This should work if checkpoint was saved correctly with updated config
+        try:
+            from transformers import AutoModel
+            model = AutoModel.from_pretrained(
+                str(model_dir),
+                trust_remote_code=True,
+                torch_dtype=torch.bfloat16,
+            )
+            model.eval()
+            model.to(device=device)
+            print(f"[Gr00tPolicy] Successfully loaded model using from_pretrained")
+        except Exception as e:
+            # Fallback to manual loading if from_pretrained fails
+            # This handles cases where config vocab_size doesn't match weights
+            print(f"[Gr00tPolicy] from_pretrained failed ({e}), using manual loading as fallback")
+            
+            # Get tokenizer vocab size
+            tokenizer = self.processor.processor.tokenizer
+            tokenizer_vocab_size = len(tokenizer)
+
+            # Load weights first to get checkpoint's embedding size
+            checkpoint_files = sorted(model_dir.glob("model*.safetensors"))
+            if not checkpoint_files:
+                checkpoint_files = sorted(model_dir.glob("pytorch_model*.safetensors"))
+            if not checkpoint_files:
+                checkpoint_files = sorted(model_dir.glob("pytorch_model*.bin"))
+            
+            if not checkpoint_files:
+                raise FileNotFoundError(f"No model weights found in {model_dir}")
+            
+            # Load weights
+            if checkpoint_files[0].suffix == ".safetensors":
+                try:
+                    from safetensors import safe_open
+                except ImportError:
+                    raise ImportError(
+                        "safetensors library is required. Install with: pip install safetensors"
+                    )
+                state_dict = {}
+                for shard_file in checkpoint_files:
+                    with safe_open(shard_file, framework="pt", device="cpu") as f:
+                        for key in f.keys():
+                            state_dict[key] = f.get_tensor(key)
+            else:
+                if len(checkpoint_files) == 1:
+                    state_dict = torch.load(checkpoint_files[0], map_location="cpu")
+                else:
+                    state_dict = {}
+                    for shard_file in checkpoint_files:
+                        state_dict.update(torch.load(shard_file, map_location="cpu"))
+            
+            # Get checkpoint vocab size
+            embed_key = None
+            for key in state_dict.keys():
+                if "embed_tokens.weight" in key or "word_embeddings.weight" in key:
+                    embed_key = key
+                    break
+            checkpoint_vocab_size = state_dict[embed_key].shape[0] if embed_key else None
+            
+            # Create model from config
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+            model = AutoModel.from_config(config, trust_remote_code=True)
+            
+            # Resize if needed
+            if checkpoint_vocab_size:
+                model_vocab_size = None
+                if hasattr(model, "backbone") and hasattr(model.backbone, "model"):
+                    try:
+                        embed_layer = model.backbone.model.language_model.model.embed_tokens
+                        model_vocab_size = embed_layer.weight.shape[0]
+                    except Exception:
+                        pass
+                
+                if model_vocab_size and checkpoint_vocab_size != model_vocab_size:
+                    print(f"[Gr00tPolicy] Resizing embeddings: {model_vocab_size} -> {checkpoint_vocab_size}")
+                    if hasattr(model, "backbone") and hasattr(model.backbone, "model"):
+                        try:
+                            # Manual resize
+                            embed_layer = model.backbone.model.language_model.model.embed_tokens
+                            old_weight = embed_layer.weight.data
+                            new_embedding = torch.nn.Embedding(checkpoint_vocab_size, old_weight.shape[1])
+                            min_size = min(old_weight.shape[0], checkpoint_vocab_size)
+                            new_embedding.weight.data[:min_size] = old_weight[:min_size]
+                            model.backbone.model.language_model.model.embed_tokens = new_embedding
+                            
+                            # Resize lm_head
+                            if hasattr(model.backbone.model.language_model, "lm_head"):
+                                lm_head = model.backbone.model.language_model.lm_head
+                                old_lm_weight = lm_head.weight.data
+                                new_lm_head = torch.nn.Linear(old_lm_weight.shape[1], checkpoint_vocab_size, bias=lm_head.bias is not None)
+                                min_out_size = min(old_lm_weight.shape[0], checkpoint_vocab_size)
+                                new_lm_head.weight.data[:min_out_size] = old_lm_weight[:min_out_size]
+                                if lm_head.bias is not None:
+                                    new_lm_head.bias.data[:min_out_size] = lm_head.bias.data[:min_out_size]
+                                model.backbone.model.language_model.lm_head = new_lm_head
+                        except Exception as e:
+                            print(f"[Gr00tPolicy WARNING] Manual resize failed: {e}")
+            
+            # Load weights
+            model.load_state_dict(state_dict, strict=False)
+            model.eval()
+            model.to(device=device, dtype=torch.bfloat16)
+        
+        self.model = model
 
         # Store embodiment-specific configurations
         self.embodiment_tag = embodiment_tag
         self.modality_configs = self.processor.get_modality_configs()[self.embodiment_tag.value]
-        self.collate_fn = self.processor.collator
+        
+        # For mem models, use single-step collator for inference (not chunk collator)
+        # Chunk collator expects chunk_len which is only available during training
+        if hasattr(self.processor, "collator") and hasattr(self.processor.collator, "_step_collator"):
+            # This is a chunk collator (for mem models), use the underlying step collator for inference
+            self.collate_fn = self.processor.collator._step_collator
+            self._is_mem_model = True
+            
+            # Set max_mem_history from model config if not provided
+            if self._max_mem_history is None:
+                if hasattr(self.model, "config") and hasattr(self.model.config, "mem_max_history_steps"):
+                    self._max_mem_history = self.model.config.mem_max_history_steps
+                else:
+                    # Default fallback
+                    self._max_mem_history = 32
+            
+            # CRITICAL: Ensure _step_collator's tokenizer has mem token!
+            # The _step_collator creates its own processor which may not have <|mem|> token.
+            # We need to sync the tokenizer so mem tokens are correctly tokenized.
+            if hasattr(self.processor, "mem_token_str"):
+                mem_token_str = self.processor.mem_token_str
+                step_tokenizer = self.collate_fn.processor.tokenizer
+                if mem_token_str not in step_tokenizer.get_vocab():
+                    step_tokenizer.add_special_tokens({"additional_special_tokens": [mem_token_str]})
+                
+                # Verify mem token embedding is properly initialized (not random/zeros)
+                if hasattr(self.model, "backbone") and hasattr(self.model.backbone, "model"):
+                    try:
+                        embed_layer = self.model.backbone.model.language_model.model.embed_tokens
+                        mem_token_id = self.processor.mem_token_id
+                        mem_emb = embed_layer.weight[mem_token_id].detach()
+                        mem_norm = mem_emb.float().norm().item()
+                        
+                        # Check if embedding looks reasonable (not near-zero)
+                        if mem_norm < 0.1:
+                            print(f"[Gr00tPolicy WARNING] <|mem|> embedding norm is very small ({mem_norm:.4f})! "
+                                  f"This may indicate the embedding was not properly loaded from checkpoint.")
+                    except Exception:
+                        pass  # Silently skip verification if it fails
+        else:
+            # Regular collator (for non-mem models)
+            self.collate_fn = self.processor.collator
+            self._is_mem_model = False
 
         # Extract and validate language configuration
         # Currently only supports single language input per timestep
@@ -337,10 +545,57 @@ class Gr00tPolicy(BasePolicy):
         # Step 3: Collate processed inputs into a single batch for model
         collated_inputs = self.collate_fn(processed_inputs)
         collated_inputs = _rec_to_dtype(collated_inputs, dtype=torch.bfloat16)
+        
+        # Extract inputs from BatchFeature/dict if needed
+        # Note: _rec_to_dtype converts BatchFeature to dict, so we check for dict with "inputs" key
+        if isinstance(collated_inputs, dict) and "inputs" in collated_inputs:
+            collated_inputs = collated_inputs["inputs"]
+        elif isinstance(collated_inputs, BatchFeature) and "inputs" in collated_inputs:
+            collated_inputs = collated_inputs["inputs"]
+        
+        # Add mem_token_id for mem models if available
+        if hasattr(self.processor, "mem_token_id") and self.processor.mem_token_id is not None:
+            collated_inputs["mem_token_id"] = self.processor.mem_token_id
 
         # Step 4: Run model inference to predict actions
         with torch.inference_mode():
-            model_pred = self.model.get_action(**collated_inputs)
+            if self._is_mem_model:
+                # Check if memory history exceeds limit - reset if needed
+                if self._max_mem_history is not None and self._mem_step_count >= self._max_mem_history:
+                    print(f"[Gr00tPolicy] Memory history limit reached ({self._mem_step_count} >= {self._max_mem_history}). Resetting memory state.")
+                    self._mem_state = None
+                    self._mem_step_count = 0
+                
+                # Replace mem_state with noise if use_noise_mem is enabled
+                mem_state_to_use = self._mem_state
+                if self._use_noise_mem and mem_state_to_use is not None:
+                    # Generate noise with same shape as mem_state [B, T, N_mem, D]
+                    noise = torch.randn_like(mem_state_to_use) * self._noise_mem_std
+                    mem_state_to_use = noise
+                
+                # For mem models, pass inputs as dict and update memory state for iterative inference
+                # Also pass use_noise_mem flag to replace mem_out with noise
+                model_pred = self.model.get_action(
+                    collated_inputs, 
+                    mem_state=mem_state_to_use,
+                    use_noise_mem_out=self._use_noise_mem,
+                    noise_mem_out_std=self._noise_mem_std,
+                )
+                # Update memory state for next step (detach to avoid any computation graph issues)
+                if "mem_state" in model_pred:
+                    new_mem_state = model_pred["mem_state"]
+                    # Detach and clone to ensure no shared memory with model internals
+                    if torch.is_tensor(new_mem_state):
+                        self._mem_state = new_mem_state.detach().clone()
+                    else:
+                        self._mem_state = new_mem_state
+                    
+                    # Increment step count if memory state is not None
+                    if self._mem_state is not None:
+                        self._mem_step_count += 1
+            else:
+                # For non-mem models, pass inputs as kwargs (original behavior)
+                model_pred = self.model.get_action(**collated_inputs)
         normalized_action = model_pred["action_pred"].float()
 
         # Step 5: Decode actions from normalized space back to physical units
@@ -408,12 +663,19 @@ class Gr00tPolicy(BasePolicy):
     def reset(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
         """Reset the policy to its initial state.
 
+        For mem models, this clears the memory state so the next episode
+        starts fresh without any historical context.
+
         Args:
             options: Dictionary containing the options for the reset
 
         Returns:
             Dictionary containing the info after resetting the policy
         """
+        # Reset memory state for mem models
+        if self._is_mem_model:
+            self._mem_state = None
+            self._mem_step_count = 0
         return {}
 
 

@@ -49,6 +49,17 @@ class ServerConfig:
     use_sim_policy_wrapper: bool = False
     """Whether to use the sim policy wrapper"""
 
+    max_mem_history: int | None = None
+    """Maximum number of steps to keep in memory before resetting (for mem models).
+    If None, uses the model's mem_max_history_steps config value."""
+
+    use_noise_mem: bool = False
+    """If True, replace past memory state with noise during inference.
+    This can be used for ablation studies or testing robustness."""
+
+    noise_mem_std: float = 0.1
+    """Standard deviation for noise when use_noise_mem=True."""
+
 
 def main(config: ServerConfig):
     print("Starting GR00T inference server...")
@@ -69,6 +80,9 @@ def main(config: ServerConfig):
             model_path=config.model_path,
             device=config.device,
             strict=config.strict,
+            max_mem_history=config.max_mem_history,
+            use_noise_mem=config.use_noise_mem,
+            noise_mem_std=config.noise_mem_std,
         )
     elif config.dataset_path is not None:
         if config.modality_config_path is None:

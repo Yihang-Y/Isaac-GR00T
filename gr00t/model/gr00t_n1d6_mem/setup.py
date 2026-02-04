@@ -145,9 +145,15 @@ class Gr00tN1d6MemPipeline(ModelPipeline):
                     # Now resize embeddings to the NEW length (includes mem token)
                     model.backbone.model.resize_token_embeddings(len(tokenizer))
                     need_resize = True
+                    # CRITICAL: Update config vocab_size to match resized embedding
+                    # This ensures saved config.json matches the actual model weights
+                    if hasattr(model.backbone.model, "config"):
+                        model.backbone.model.config.vocab_size = len(tokenizer)
+                    if hasattr(model.backbone.model.language_model, "config"):
+                        model.backbone.model.language_model.config.vocab_size = len(tokenizer)
                     logging.info(
                         f"Added mem token '{self.model_config.mem_token_str}' and resized "
-                        f"embeddings to {len(tokenizer)}"
+                        f"embeddings to {len(tokenizer)}. Updated config vocab_size to {len(tokenizer)}"
                     )
                 
                 # ===== CRITICAL FIX: Initialize <|mem|> with IMAGE TOKEN embedding =====

@@ -1006,8 +1006,26 @@ class Gr00tN1d6Mem(PreTrainedModel):
         action_outputs["mem_tokens"] = mem_tokens
         return action_outputs
 
-    def get_action(self, inputs: dict) -> BatchFeature:
-        """Generate actions using the complete model."""
+    def get_action(
+        self, 
+        inputs: dict, 
+        mem_state: Optional[torch.Tensor] = None,
+        use_noise_mem_out: bool = False,
+        noise_mem_out_std: float = 0.1,
+    ) -> BatchFeature:
+        """Generate actions using the complete model with memory state support.
+        
+        Args:
+            inputs: Dictionary containing model inputs
+            mem_state: Previous memory state [B, T_past, N_mem, D] or None for first step
+            use_noise_mem_out: If True, replace mem_out with noise (for ablation studies)
+            noise_mem_out_std: Standard deviation for noise when use_noise_mem_out=True
+            
+        Returns:
+            BatchFeature containing:
+                - action_pred: Predicted actions
+                - mem_state: Updated memory state for next step (important for iterative inference)
+        """
         backbone_inputs, action_inputs = self.prepare_input(inputs)
         mem_token_id = inputs.get("mem_token_id", None)
         backbone_outputs = self.backbone(backbone_inputs, mem_token_id=mem_token_id)
@@ -1028,8 +1046,14 @@ class Gr00tN1d6Mem(PreTrainedModel):
                 dtype=backbone_outputs["backbone_features"].dtype,
             )
 
-        # Process through memory module
-        mem_out, _ = self.memory_module(mem_tokens, past_m=None)
+        # Process through memory module with past memory state
+        mem_out, new_mem_state = self.memory_module(mem_tokens, past_m=mem_state)
+        
+        # Replace mem_out with noise if requested
+        if use_noise_mem_out and mem_out is not None:
+            # mem_out shape: [B, K, D] where K is mem_out_tokens
+            noise = torch.randn_like(mem_out) * noise_mem_out_std
+            mem_out = noise
 
         # Get action
         backbone_outputs = self._filter_mem_tokens_from_backbone(backbone_outputs)
@@ -1041,6 +1065,9 @@ class Gr00tN1d6Mem(PreTrainedModel):
             backbone_output=backbone_outputs,
             memory_features=mem_out,
         )
+        
+        # Return memory state for iterative inference
+        action_outputs["mem_state"] = new_mem_state
 
         return action_outputs
 

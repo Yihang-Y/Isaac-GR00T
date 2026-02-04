@@ -294,8 +294,6 @@ def run_rollout_gymnasium_policy(
     while completed_episodes < n_episodes:
         actions, _ = policy.get_action(observations)
         next_obs, rewards, terminations, truncations, env_infos = env.step(actions)
-        # NOTE (FY): Currently we don't properly handle policy reset. For now, our policy are stateless,
-        # but in the future if we need policy to be stateful, we need to detect env reset and call policy.reset()
         i += 1
         # Update episode tracking
         for env_idx in range(n_envs):
@@ -357,6 +355,13 @@ def run_rollout_gymnasium_policy(
                     pbar.update(1)
                 current_rewards[env_idx] = 0
                 current_lengths[env_idx] = 0
+                
+                # Reset policy memory state when episode ends
+                # NOTE: For multi-env (n_envs > 1), this resets ALL memory states,
+                # which is not ideal but necessary for stateful policies like mem models.
+                # For accurate per-env memory, use n_envs=1.
+                if n_envs == 1:
+                    policy.reset()
         observations = next_obs
     pbar.close()
 
@@ -389,6 +394,9 @@ def create_gr00t_sim_policy(
     embodiment_tag: EmbodimentTag,
     policy_client_host: str = "",
     policy_client_port: int | None = None,
+    max_mem_history: int | None = None,
+    use_noise_mem: bool = False,
+    noise_mem_std: float = 0.1,
 ) -> BasePolicy:
     from gr00t.policy.gr00t_policy import Gr00tPolicy, Gr00tSimPolicyWrapper
 
@@ -402,6 +410,9 @@ def create_gr00t_sim_policy(
                 embodiment_tag=embodiment_tag,
                 model_path=model_path,
                 device=0,
+                max_mem_history=max_mem_history,
+                use_noise_mem=use_noise_mem,
+                noise_mem_std=noise_mem_std,
             )
         )
     return policy
@@ -416,6 +427,9 @@ def run_gr00t_sim_policy(
     policy_client_port: int | None = None,
     n_envs: int = 8,
     n_action_steps: int = 8,
+    max_mem_history: int | None = None,
+    use_noise_mem: bool = False,
+    noise_mem_std: float = 0.1,
 ):
     embodiment_tag = get_embodiment_tag_from_env_name(env_name)
 
@@ -441,7 +455,7 @@ def run_gr00t_sim_policy(
     )
 
     policy = create_gr00t_sim_policy(
-        model_path, embodiment_tag, policy_client_host, policy_client_port
+        model_path, embodiment_tag, policy_client_host, policy_client_port, max_mem_history, use_noise_mem, noise_mem_std
     )
 
     results = run_rollout_gymnasium_policy(
@@ -473,6 +487,25 @@ if __name__ == "__main__":
     )
     parser.add_argument("--n_envs", type=int, default=8)
     parser.add_argument("--n_action_steps", type=int, default=8)
+    parser.add_argument(
+        "--max_mem_history",
+        type=int,
+        default=None,
+        help="Maximum number of steps to keep in memory before resetting (for mem models). "
+        "If None, uses the model's mem_max_history_steps config value.",
+    )
+    parser.add_argument(
+        "--use_noise_mem",
+        action="store_true",
+        help="Replace past memory state with noise during inference. "
+        "This can be used for ablation studies or testing robustness.",
+    )
+    parser.add_argument(
+        "--noise_mem_std",
+        type=float,
+        default=0.1,
+        help="Standard deviation for noise when --use_noise_mem is enabled.",
+    )
 
     args = parser.parse_args()
 
@@ -495,6 +528,9 @@ if __name__ == "__main__":
         policy_client_port=args.policy_client_port,
         n_envs=args.n_envs,
         n_action_steps=args.n_action_steps,
+        max_mem_history=args.max_mem_history,
+        use_noise_mem=args.use_noise_mem,
+        noise_mem_std=args.noise_mem_std,
     )
     print("results: ", results)
     print("success rate: ", np.mean(results[1]))

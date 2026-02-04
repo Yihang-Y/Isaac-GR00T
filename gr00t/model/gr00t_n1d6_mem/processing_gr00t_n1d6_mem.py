@@ -265,6 +265,30 @@ class Gr00tN1d6MemProcessor(Gr00tN1d6Processor):
             self.processor.tokenizer.add_special_tokens({"additional_special_tokens": [mem_token_str]})
         self.mem_token_id = self.processor.tokenizer.convert_tokens_to_ids(mem_token_str)
 
+    def save_pretrained(self, save_directory):
+        """Save processor with mem-specific config."""
+        import json
+        from pathlib import Path
+        
+        # Call parent save_pretrained first
+        saved_files = super().save_pretrained(save_directory)
+        
+        # Load and update config with mem-specific settings
+        config_file = Path(save_directory) / "processor_config.json"
+        with open(config_file, "r") as f:
+            config = json.load(f)
+        
+        # Update processor_class and add mem-specific kwargs
+        config["processor_class"] = "Gr00tN1d6MemProcessor"
+        config["processor_kwargs"]["num_mem_tokens"] = self.num_mem_tokens
+        config["processor_kwargs"]["mem_token_str"] = self.mem_token_str
+        config["processor_kwargs"]["mem_insert_position"] = self.mem_insert_position
+        
+        with open(config_file, "w") as f:
+            json.dump(config, f, indent=2)
+        
+        return saved_files
+
     def _apply_vlm_processing(self, images: np.ndarray, language: str) -> Dict[str, Any]:
         """
         Apply VLM processing with memory tokens inserted.

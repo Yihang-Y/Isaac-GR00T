@@ -14,6 +14,11 @@ def is_gr1_env(env_name: str) -> bool:
     return env_name.startswith("gr1") or env_name.startswith("gr1_unified")
 
 
+def is_libero_sim_env(env_name: str) -> bool:
+    """Check if environment is a libero_sim environment"""
+    return env_name.startswith("libero_sim")
+
+
 def get_embodiment_tag_from_env_name(env_name: str) -> EmbodimentTag:
     if is_groot_locomanip_env(env_name):
         groot_locomanip_mappings = {
@@ -28,5 +33,8 @@ def get_embodiment_tag_from_env_name(env_name: str) -> EmbodimentTag:
 
     if is_gr1_env(env_name):
         return EmbodimentTag.GR1
+
+    if is_libero_sim_env(env_name):
+        return EmbodimentTag.LIBERO_PANDA
 
     return EmbodimentTag(env_name.split("/")[0])
